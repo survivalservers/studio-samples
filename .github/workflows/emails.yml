@@ -1,0 +1,32 @@
+# Refuses personal email addresses: every commit's author and committer must be a GitHub no-reply address,
+# and package files may name only a role address or a no-reply address. Required by main's ruleset.
+name: emails
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  emails:
+    name: No personal email addresses
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Check commits and package files
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -eu
+          if [ -n "$BASE" ]; then range="$BASE..$HEAD"; else range="$HEAD"; fi
+          python3 .github/scripts/check-emails.py "$range"
