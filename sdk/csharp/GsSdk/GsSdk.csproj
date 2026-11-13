@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- gs_sdk for C#: a thin layer over the C library (gs_sdk.dll / libgs_sdk.so beside the game). .NET Standard 2.1,
+       so Unity and any current .NET can use it. Apache-2.0. -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>9.0</LangVersion>
+    <RootNamespace>GameServerSdk</RootNamespace>
+    <AssemblyName>GsSdk</AssemblyName>
+  </PropertyGroup>
+</Project>

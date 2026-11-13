@@ -1,0 +1,15 @@
+{
+  "name": "1.0.0",
+  "build": "BUILD_ID",
+  "size": { "cpu": 2, "memory_gb": 4 },
+  "launch": {
+    "ports": [{ "name": "game", "protocol": "udp", "container_port": 7777 }],
+    "ready_check": { "type": "local_api" },
+    "stop": { "method": "sigterm", "shutdown_time": "15s" },
+    "log_paths": ["/game/GameServerSample/Saved/Logs/*.log"],
+    "artifact_paths": ["/game/GameServerSample/Saved/Crashes/**"]
+  },
+  "restart": { "policy": "never" },
+  "max_duration": "2h",
+  "regions": ["*"]
+}

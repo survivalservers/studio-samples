@@ -1,0 +1,13 @@
+[package]
+name = "bevy-server-sample"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "A headless Bevy game server that runs on the platform and reports through the Rust SDK"
+
+[dependencies]
+bevy = { version = "0.20", default-features = false }
+gs-sdk = { path = "../sdk/rust" }
+
+[profile.release]
+strip = true

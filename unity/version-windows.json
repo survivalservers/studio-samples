@@ -1,0 +1,15 @@
+{
+  "name": "1.0.0",
+  "build": "BUILD_ID",
+  "size": { "cpu": 1, "memory_gb": 2 },
+  "launch": {
+    "executable": "GameServer.exe",
+    "args": ["-batchmode", "-nographics", "-logFile", "-"],
+    "ports": [{ "name": "game", "protocol": "udp" }],
+    "ready_check": { "type": "local_api" },
+    "stop": { "method": "local_api", "shutdown_time": "15s" }
+  },
+  "restart": { "policy": "never" },
+  "max_duration": "2h",
+  "regions": ["*"]
+}

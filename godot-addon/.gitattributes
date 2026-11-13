@@ -1,0 +1,7 @@
+# The Asset Library's download is this folder as an archive: only the add-on goes in it.
+/.gitattributes export-ignore
+/.gitignore export-ignore
+/README.md export-ignore
+/demo export-ignore
+/project.godot export-ignore
+/*.go export-ignore

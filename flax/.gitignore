@@ -1,0 +1,13 @@
+Binaries/
+Cache/
+Logs/
+Output/
+Source/*.csproj
+Source/*.Gen.cs
+Source/Properties/
+.vscode/
+*.slnx
+*.DotSettings.user
+*.code-workspace
+omnisharp.json
+dist/

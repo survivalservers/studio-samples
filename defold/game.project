@@ -1,0 +1,22 @@
+[project]
+title = DefoldServer
+version = 1.0.0
+
+[bootstrap]
+main_collection = /main/main.collectionc
+
+[display]
+width = 64
+height = 64
+vsync = 0
+update_frequency = 30
+
+[engine]
+run_while_iconified = 1
+
+[physics]
+type = 2D
+max_collision_object_count = 0
+
+[input]
+game_binding = /input/game.input_bindingc

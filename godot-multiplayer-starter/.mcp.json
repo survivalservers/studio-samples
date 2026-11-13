@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "survival-servers": {"type":"stdio","command":"survivalservers","args":["mcp"],"env":{"GS_API_URL":"https://studio.survivalservers.com"}}
+  }
+}

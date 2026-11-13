@@ -1,0 +1,17 @@
+{
+  "name": "1.0.0",
+  "build": "BUILD_ID",
+  "size": { "cpu": 2, "memory_gb": 4 },
+  "launch": {
+    "executable": "WindowsServer/GameServerSampleServer.exe",
+    "args": ["-log", "-Port={{port.game}}"],
+    "ports": [{ "name": "game", "protocol": "udp" }],
+    "ready_check": { "type": "local_api" },
+    "stop": { "method": "ctrl_break", "shutdown_time": "15s" },
+    "log_paths": ["WindowsServer/GameServerSample/Saved/Logs/*.log"],
+    "artifact_paths": ["WindowsServer/GameServerSample/Saved/Crashes/**"]
+  },
+  "restart": { "policy": "never" },
+  "max_duration": "2h",
+  "regions": ["*"]
+}

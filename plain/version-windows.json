@@ -1,0 +1,14 @@
+{
+  "name": "1.0.0",
+  "build": "BUILD_ID",
+  "size": { "cpu": 1, "memory_gb": 1 },
+  "launch": {
+    "executable": "PlainServer.exe",
+    "ports": [{ "name": "game", "protocol": "udp" }],
+    "ready_check": { "type": "local_api" },
+    "stop": { "method": "ctrl_break", "shutdown_time": "10s" }
+  },
+  "restart": { "policy": "never" },
+  "max_duration": "2h",
+  "regions": ["*"]
+}

@@ -1,0 +1,6 @@
+<Project>
+  <!-- Build in-process: no compiler or MSBuild servers left running on the shared PC after a build or test. -->
+  <PropertyGroup>
+    <UseSharedCompilation>false</UseSharedCompilation>
+  </PropertyGroup>
+</Project>

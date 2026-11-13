@@ -1,0 +1,13 @@
+{
+  "name": "1.0.0",
+  "build": "BUILD_ID",
+  "size": { "cpu": 1, "memory_gb": 1 },
+  "launch": {
+    "ports": [{ "name": "game", "protocol": "udp", "container_port": 7777 }],
+    "ready_check": { "type": "local_api" },
+    "stop": { "method": "local_api", "shutdown_time": "10s" }
+  },
+  "restart": { "policy": "never" },
+  "max_duration": "2h",
+  "regions": ["*"]
+}

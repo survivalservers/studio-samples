@@ -1,0 +1,12 @@
+<Project Sdk="Godot.NET.Sdk/4.7.2">
+  <!-- The C# SDK is a thin layer over the C library: libgs_sdk.so or gs_sdk.dll goes beside the game (see Server.cs). -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <!-- A server shows no localized text: no ICU library needed on the machine. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../sdk/csharp/GsSdk/GsSdk.csproj" />
+  </ItemGroup>
+</Project>

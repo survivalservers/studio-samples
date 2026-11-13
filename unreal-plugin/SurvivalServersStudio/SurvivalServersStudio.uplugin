@@ -1,0 +1,28 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "Survival Servers Studio",
+	"Description": "Runs your dedicated server on Survival Servers Studio: ready when the map is loaded, the match and its settings, players from logins and logouts, labels, frame times, shutdown notices and the end of a match. Every call is optional and does nothing outside a hosted game server.",
+	"Category": "Networking",
+	"CreatedBy": "Survival Servers",
+	"CreatedByURL": "https://studio.survivalservers.com",
+	"DocsURL": "https://studio.survivalservers.com/docs/get-started/unreal/",
+	"MarketplaceURL": "",
+	"FabURL": "",
+	"SupportURL": "https://studio.survivalservers.com/docs/",
+	"EngineVersion": "5.8.0",
+	"CanContainContent": false,
+	"Installed": false,
+	"SupportedTargetPlatforms": [
+		"Win64",
+		"Linux"
+	],
+	"Modules": [
+		{
+			"Name": "SurvivalServersStudio",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}

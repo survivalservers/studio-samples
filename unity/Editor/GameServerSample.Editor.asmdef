@@ -1,0 +1,13 @@
+{
+  "name": "GameServerSample.Editor",
+  "rootNamespace": "GameServerSample.Editor",
+  "references": ["GameServerSample.Runtime"],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "noEngineReferences": false
+}

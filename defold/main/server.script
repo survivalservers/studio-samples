@@ -1,0 +1,351 @@
+-- A sample game server for Defold's headless engine (dmengine_headless), with no extension. Everything the platform
+-- offers is plain HTTP, and LuaSocket (built into Defold) carries both the local API calls and the game:
+--
+-- - the port and the match settings come from GS_* environment variables and the allocation call;
+-- - it says it is ready on the local API (or a version can watch for the line it prints);
+-- - pre-started as a ready server, it waits for its match on a long-poll;
+-- - it reports its players, ends the match by stopping itself, and saves on the way out when asked to stop (the stop
+--   notice on the local API);
+-- - it leaves a result file to be collected after it exits.
+--
+-- The "game" is a tiny UDP protocol: "join <name>", "leave <name>", "ping". The match ends when everyone who joined
+-- has left. With no GS_* variables it runs as a plain local server on port 7777.
+
+local READY_LINE = "Server ready for players"
+local LONG_POLL = "30s"
+
+local agent_url = os.getenv("GS_LOCAL_API_URL") or ""
+if agent_url == "" then agent_url = os.getenv("GS_AGENT_URL") or "" end
+local token = os.getenv("GS_TOKEN") or ""
+local gs_id = os.getenv("GS_ID") or "local"
+
+-- Linux images listen on the container port; Windows builds bind the public port itself.
+local function listen_port()
+	for _, name in ipairs({ "GS_PORT_GAME_INTERNAL", "GS_PORT_GAME" }) do
+		local n = tonumber(os.getenv(name) or "")
+		if n and n > 0 then
+			return n
+		end
+	end
+	return 7777
+end
+
+-- The local API over LuaSocket's TCP (Defold's http module is not there in the headless engine 1.14). Each call is a
+-- coroutine that update() moves on every frame, so a 30-second long-poll never blocks the game. It speaks HTTP/1.0,
+-- so the answer comes whole (no chunks) and the connection closes after it.
+local api_host, api_port = agent_url:match("^http://([^/:]+):?(%d*)")
+api_port = tonumber(api_port) or 80
+local calls = {}
+
+local function exchange(method, path, data)
+	local c = socket.tcp()
+	c:settimeout(0)
+	local deadline = socket.gettime() + 40 -- longer than a long-poll's wait
+	local ok, err = c:connect(api_host, api_port)
+	if not ok and err ~= "timeout" and err ~= "Operation already in progress" then
+		return 0, ""
+	end
+	while true do
+		local _, writable = socket.select(nil, { c }, 0)
+		if #writable > 0 then
+			break
+		end
+		if socket.gettime() > deadline then
+			c:close()
+			return 0, ""
+		end
+		coroutine.yield()
+	end
+	local req = method .. " " .. path .. " HTTP/1.0\r\nHost: " .. api_host .. "\r\nAuthorization: Bearer " .. token ..
+		"\r\nContent-Length: " .. #data .. "\r\n" .. (#data > 0 and "Content-Type: application/json\r\n" or "") ..
+		"\r\n" .. data
+	local i = 1
+	while i <= #req do
+		local n, serr, last = c:send(req, i)
+		if n then
+			i = n + 1
+		elseif serr == "timeout" then
+			i = last + 1
+			coroutine.yield()
+		else
+			c:close()
+			return 0, ""
+		end
+	end
+	local chunks = {}
+	while true do
+		local got, rerr, partial = c:receive(8192)
+		local piece = got or partial
+		if piece and #piece > 0 then
+			chunks[#chunks + 1] = piece
+		end
+		if rerr == "closed" then
+			break
+		elseif rerr == "timeout" then
+			if socket.gettime() > deadline then
+				c:close()
+				return 0, ""
+			end
+			coroutine.yield()
+		elseif rerr then
+			c:close()
+			return 0, ""
+		end
+	end
+	c:close()
+	local reply = table.concat(chunks)
+	local status = tonumber(reply:match("^HTTP/%d%.%d (%d+)")) or 0
+	return status, reply:match("\r\n\r\n(.*)$") or ""
+end
+
+-- One call to the local API; cb(status, body). Status 0 when the call did not complete.
+local function call(method, path, body, cb)
+	local data = ""
+	if body ~= nil then
+		data = type(body) == "string" and body or json.encode(body)
+	end
+	calls[#calls + 1] = coroutine.create(function()
+		local status, reply = exchange(method, path, data)
+		if cb then
+			cb(status, reply)
+		end
+	end)
+end
+
+-- Moves every call on; called from update().
+local function pump()
+	local i = 1
+	while i <= #calls do
+		local co = calls[i]
+		local ok, err = coroutine.resume(co)
+		if not ok then
+			print("local API call: " .. tostring(err))
+		end
+		if coroutine.status(co) == "dead" then
+			table.remove(calls, i)
+		else
+			i = i + 1
+		end
+	end
+end
+
+-- The platform refuses a player ID of more than 128 characters or with a control character.
+local function bad_name(who)
+	if #who == 0 or #who > 128 then
+		return true
+	end
+	return who:find("[%z\1-\31\127]") ~= nil
+end
+
+local function names(players)
+	local list = {}
+	for name in pairs(players) do
+		list[#list + 1] = name
+	end
+	table.sort(list)
+	return list
+end
+
+-- Sends the player list, one call at a time; a change during a call sends the newest list after it.
+local function report_players(self)
+	if agent_url == "" then
+		return
+	end
+	if self.reporting then
+		self.report_again = true
+		return
+	end
+	self.reporting = true
+	self.report_again = false
+	-- By hand: json.encode makes an empty table an object, and the list must be an array even when empty.
+	local quoted = {}
+	for _, name in ipairs(names(self.players)) do
+		quoted[#quoted + 1] = json.encode(name)
+	end
+	call("PUT", "/v0/self/players", '{"ids":[' .. table.concat(quoted, ",") .. "]}", function()
+		self.reporting = false
+		if self.report_again then
+			report_players(self)
+		elseif self.after_report then
+			local f = self.after_report
+			self.after_report = nil
+			f()
+		end
+	end)
+end
+
+local function set_allocation(self, data)
+	self.allocation = data
+	-- Setting names only: values can be secret, and the console is a log kept for 90 days.
+	local keys = {}
+	for k in pairs(data.env or {}) do
+		keys[#keys + 1] = k
+	end
+	table.sort(keys)
+	print(string.format('allocated: match "%s", settings %s', data.external_id or "", table.concat(keys, ",")))
+end
+
+-- match-result.json in GS_ARTIFACT_DIR is collected after the game server exits.
+local function write_result(self, reason, seconds)
+	local dir = os.getenv("GS_ARTIFACT_DIR")
+	if not dir or dir == "" then
+		return
+	end
+	local result = { game_server_id = gs_id, reason = reason, peak_players = self.peak, seconds = seconds }
+	if self.allocation then
+		result.match = self.allocation.external_id or ""
+	end
+	local f = io.open(dir .. "/match-result.json", "w")
+	if f then
+		f:write(json.encode(result) .. "\n")
+		f:close()
+	end
+end
+
+-- Ends the match: the last player list goes out, the result is saved, and if the game server decided to end (rather
+-- than being asked to stop) it tells the platform, which is the same as exiting with code 0.
+local function finish(self, reason, self_stop)
+	if self.ending then
+		return
+	end
+	self.ending = true
+	local function leave()
+		local seconds = math.floor(socket.gettime() - self.started)
+		print(string.format("match over: %s after %ds, %d players at most", reason, seconds, self.peak))
+		write_result(self, reason, seconds)
+		if self_stop and agent_url ~= "" then
+			call("POST", "/v0/self/stop", { reason = reason }, function()
+				sys.exit(0)
+			end)
+		else
+			sys.exit(0)
+		end
+	end
+	if self.reporting then
+		self.after_report = leave
+	else
+		leave()
+	end
+end
+
+local function wait_for_allocation(self)
+	if self.allocation or self.ending then
+		return
+	end
+	call("GET", "/v0/self/allocation?wait=" .. LONG_POLL, nil, function(status, body)
+		if status == 200 then
+			set_allocation(self, json.decode(body))
+		elseif status ~= 204 then
+			timer.delay(1, false, function() wait_for_allocation(self) end)
+			return
+		end
+		wait_for_allocation(self)
+	end)
+end
+
+local function wait_for_stop(self)
+	if self.ending then
+		return
+	end
+	call("GET", "/v0/self/shutdown?wait=" .. LONG_POLL, nil, function(status)
+		if status == 200 then
+			print("stop asked; saving and leaving")
+			finish(self, "stop_asked", false)
+		elseif status == 204 then
+			wait_for_stop(self)
+		else
+			timer.delay(1, false, function() wait_for_stop(self) end)
+		end
+	end)
+end
+
+-- Runs one command from a player.
+local function handle(self, line)
+	local cmd, who = line:match("^(%S+)%s*(.-)%s*$")
+	if cmd == "ping" then
+		return "pong"
+	end
+	if cmd == "join" and who ~= "" then
+		if bad_name(who) then
+			-- The platform refuses a player list holding such a name, so it never joins; the others keep counting.
+			return "refused: a name is 1 to 128 characters with no control characters"
+		end
+		if self.players[who] then
+			return "already in " .. gs_id
+		end
+		self.players[who] = true
+		self.count = self.count + 1
+		self.joined = true
+		self.peak = math.max(self.peak, self.count)
+		print(string.format("%s joined (%d playing)", who, self.count))
+		report_players(self)
+		return string.format("welcome %s to %s", who, gs_id)
+	end
+	if cmd == "leave" and who ~= "" then
+		if not self.players[who] then
+			return "not in " .. gs_id
+		end
+		self.players[who] = nil
+		self.count = self.count - 1
+		print(string.format("%s left (%d playing)", who, self.count))
+		report_players(self)
+		if self.joined and self.count == 0 then
+			finish(self, "match_over", true)
+		end
+		return "bye " .. who
+	end
+	return "unknown command; try join <name>, leave <name> or ping"
+end
+
+function init(self)
+	self.players, self.count, self.peak, self.joined, self.ending = {}, 0, 0, false, false
+	self.started = socket.gettime()
+	local port = listen_port()
+	self.udp = socket.udp()
+	local ok, err = self.udp:setsockname("*", port)
+	if not ok then
+		print("bind game port " .. port .. ": " .. tostring(err))
+		sys.exit(1)
+		return
+	end
+	self.udp:settimeout(0)
+	print(string.format("listening on udp %d; players connect to %s:%s", port, os.getenv("GS_PUBLIC_IP") or "",
+		os.getenv("GS_PORT_GAME") or port))
+	if agent_url == "" then
+		print(READY_LINE)
+		return
+	end
+	-- A fresh start is allocated before it starts: read the match now, before saying ready, so it is set up before the
+	-- first player arrives. A ready server (pre-started) has none yet (204) and waits for it after ready.
+	call("GET", "/v0/self/allocation?wait=0s", nil, function(status, body)
+		if status == 200 then
+			set_allocation(self, json.decode(body))
+		end
+		-- A version can use this exact line as its ready check instead of the call below.
+		print(READY_LINE)
+		call("POST", "/v0/self/ready", nil, function(rs, rb)
+			if rs < 200 or rs >= 300 then
+				print("say ready: " .. rs .. " " .. rb)
+				sys.exit(1)
+				return
+			end
+			-- The allocation call answers at once on a fresh start, and is the only place secret settings come from.
+			wait_for_allocation(self)
+			wait_for_stop(self)
+		end)
+	end)
+end
+
+function update(self)
+	pump()
+	while not self.ending do
+		local line, ip, port = self.udp:receivefrom()
+		if not line then
+			break
+		end
+		local reply = handle(self, line)
+		if reply ~= "" then
+			self.udp:sendto(reply, ip, port)
+		end
+	end
+end

@@ -1,0 +1,17 @@
+{
+	"ID": "089f84190052617aed1823da3784032e",
+	"TypeName": "FlaxEditor.Content.Settings.NetworkSettings",
+	"EngineBuild": 7012,
+	"Data": {
+	"MaxClients": 100,
+	"ProtocolVersion": 1,
+	"NetworkFPS": 60.0,
+	"Address": "127.0.0.1",
+	"Port": 7777,
+	"NetworkDriver": "FlaxEngine.Networking.ENetDriver",
+	"MaxMessagesPerUpdate": 512,
+	"MaxMessagesPerUpdatePerClient": 64,
+	"MaxSyncParts": 4096,
+	"MaxSyncPartTTL": 2.0
+}
+}

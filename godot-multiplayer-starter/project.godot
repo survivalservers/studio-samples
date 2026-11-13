@@ -1,0 +1,19 @@
+; One Godot project for both the game client and its dedicated server. main.gd picks the role when it starts.
+config_version=5
+
+[application]
+
+config/name="Godot multiplayer starter"
+run/main_scene="res://main.tscn"
+
+[autoload]
+
+GameServer="*res://addons/game_server/game_server.gd"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/game_server/plugin.cfg")
+
+[physics]
+
+common/physics_ticks_per_second=20

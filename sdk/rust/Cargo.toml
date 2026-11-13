@@ -1,0 +1,17 @@
+[package]
+name = "gs-sdk"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "A thin Rust layer over the gs_sdk C library for the local API"
+links = "gs_sdk"
+build = "build.rs"
+
+[lib]
+name = "gs_sdk"
+
+[build-dependencies]
+cc = "1.2"
+
+[[example]]
+name = "sample"

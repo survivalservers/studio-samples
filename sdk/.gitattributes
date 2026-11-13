@@ -1,0 +1,2 @@
+# Go source is LF everywhere, so gofmt agrees on a Windows checkout too.
+* text=auto eol=lf

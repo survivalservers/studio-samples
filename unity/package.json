@@ -1,0 +1,11 @@
+{
+  "name": "com.survivalservers.studio",
+  "version": "0.1.0",
+  "displayName": "Survival Servers Studio",
+  "description": "A dedicated game server with no SDK: ports and match settings from the environment and the local API, ready, players, stop.",
+  "unity": "2021.3",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "com.unity.nuget.newtonsoft-json": "3.2.1"
+  }
+}

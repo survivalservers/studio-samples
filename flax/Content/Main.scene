@@ -1,0 +1,12 @@
+{
+	"ID": "5e1c7d3a9b2f4e0d8c6a1b3f7e9d2c40",
+	"TypeName": "FlaxEngine.SceneAsset",
+	"EngineBuild": 7012,
+	"Data": [
+		{
+			"ID": "5e1c7d3a9b2f4e0d8c6a1b3f7e9d2c40",
+			"TypeName": "FlaxEngine.Scene",
+			"Name": "Main"
+		}
+	]
+}

@@ -1,0 +1,7 @@
+; A sample game server for Godot 4, run headless. No plugin: everything is in server.gd.
+config_version=5
+
+[application]
+
+config/name="Sample game server"
+run/main_scene="res://server.tscn"

@@ -1,0 +1,16 @@
+; The demo project for the Survival Servers Studio add-on. The add-on itself is addons/game_server: copy that folder into your
+; project (or install it from the Asset Library) and turn it on under Project > Project Settings > Plugins.
+config_version=5
+
+[application]
+
+config/name="Survival Servers Studio add-on demo"
+run/main_scene="res://demo/match.tscn"
+
+[autoload]
+
+GameServer="*res://addons/game_server/game_server.gd"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/game_server/plugin.cfg")

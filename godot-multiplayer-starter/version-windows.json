@@ -1,0 +1,13 @@
+{
+  "size": { "cpu": 1, "memory_gb": 1 },
+  "launch": {
+    "executable": "Godot_v4.7.2-stable_win64_console.exe",
+    "args": ["--headless", "--path", "."],
+    "ports": [{ "name": "game", "protocol": "udp" }],
+    "ready_check": { "type": "local_api" },
+    "stop": { "method": "local_api", "shutdown_time": "10s" }
+  },
+  "restart": { "policy": "never" },
+  "max_duration": "2h",
+  "regions": ["*"]
+}

@@ -1,0 +1,12 @@
+; A sample game server for Godot 4 .NET, run headless: Server.cs with the C# SDK (../sdk/csharp).
+config_version=5
+
+[application]
+
+config/name="Sample game server (C#)"
+run/main_scene="res://server.tscn"
+config/features=PackedStringArray("4.7", "C#")
+
+[dotnet]
+
+project/assembly_name="GodotCsServer"

@@ -1,0 +1,13 @@
+{
+  "name": "1.0.0",
+  "build": "BUILD_ID",
+  "size": { "cpu": 1, "memory_gb": 1 },
+  "launch": {
+    "ports": [{ "name": "game", "protocol": "tcp", "container_port": 2567 }],
+    "ready_check": { "type": "local_api" },
+    "stop": { "method": "sigterm", "shutdown_time": "10s" }
+  },
+  "restart": { "policy": "never" },
+  "max_duration": "2h",
+  "regions": ["*"]
+}

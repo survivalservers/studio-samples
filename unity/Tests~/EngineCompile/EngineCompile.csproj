@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Compile check only: the Unity layer (Runtime/Unity, Editor) against small stand-ins for the engine types it uses
+    (EngineStubs.cs). It catches mistakes in our code, not mismatches with the real engine: the real check is a build
+    in Unity, pending on the Windows test machine.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <DefineConstants>$(DefineConstants);UNITY_SERVER</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../Runtime/Core/*.cs" Link="Core/%(Filename)%(Extension)" />
+    <Compile Include="../../Runtime/Unity/*.cs" Link="Unity/%(Filename)%(Extension)" />
+    <Compile Include="../../Editor/*.cs" Link="Editor/%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+</Project>
