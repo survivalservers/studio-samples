@@ -1,0 +1,4 @@
+# The actions this repository allows, one per line, exactly as in the repository's Actions setting
+# (Settings → Actions → "Allow select actions"). Keep the two the same. check-actions.py fails when a workflow,
+# or an action one of them uses, calls anything not listed here.
+actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
