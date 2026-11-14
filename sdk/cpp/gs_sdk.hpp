@@ -4,7 +4,9 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -53,11 +55,12 @@ public:
 		gs_result r = gs_open_with(agent_url.c_str(), token.c_str(), &c_);
 		if (r != GS_OK) throw Error(r, "gs_open_with failed");
 	}
-	Client(Client&& o) noexcept : c_(std::exchange(o.c_, nullptr)) {}
+	Client(Client&& o) noexcept : c_(std::exchange(o.c_, nullptr)), cb_(std::move(o.cb_)) {}
 	Client& operator=(Client&& o) noexcept {
 		if (this != &o) {
 			gs_close(c_);
 			c_ = std::exchange(o.c_, nullptr);
+			cb_ = std::move(o.cb_);
 		}
 		return *this;
 	}
@@ -81,12 +84,7 @@ public:
 		gs_result r = gs_wait_allocation(c_, static_cast<int>(wait.count()), &a);
 		if (r == GS_ERR_NONE_YET) return std::nullopt;
 		check(r);
-		Allocation out;
-		out.game_server_id = gs_allocation_game_server_id(a);
-		out.external_id = gs_allocation_external_id(a);
-		for (std::size_t i = 0; gs_allocation_arg(a, i); i++) out.args.push_back(gs_allocation_arg(a, i));
-		for (std::size_t i = 0; gs_allocation_env_name(a, i); i++) out.env[gs_allocation_env_name(a, i)] = gs_allocation_env_value(a, i);
-		for (std::size_t i = 0; gs_allocation_label_name(a, i); i++) out.labels[gs_allocation_label_name(a, i)] = gs_allocation_label_value(a, i);
+		Allocation out = toAllocation(a);
 		gs_allocation_free(a);
 		return out;
 	}
@@ -114,12 +112,56 @@ public:
 	void RemoveLabel(const std::string& name) { check(gs_set_label(c_, name.c_str(), nullptr)); }
 	void Tick(double p50_ms, double p99_ms, int hz = 0) { check(gs_tick(c_, p50_ms, p99_ms, hz)); }
 
+	// StartBackground: health every healthEvery (zero: none), and onMatch and onStop called once each, from a thread
+	// of the library's, when the match arrives and when the stop notice comes (empty: not waited for). StopBackground
+	// or the destructor ends it, within about 5 seconds; never call either from inside a callback. An exception a
+	// callback throws ends that callback only.
+	void StartBackground(std::chrono::milliseconds healthEvery, std::function<void(const Allocation&)> onMatch,
+	                     std::function<void(const Shutdown&)> onStop) {
+		auto cb = std::make_unique<Callbacks>();
+		cb->onMatch = std::move(onMatch);
+		cb->onStop = std::move(onStop);
+		check(gs_background_start(c_, static_cast<int>(healthEvery.count()), cb->onMatch ? &matchThunk : nullptr,
+		                          cb->onStop ? &stopThunk : nullptr, cb.get()));
+		cb_ = std::move(cb);
+	}
+	void StopBackground() { gs_background_stop(c_); }
+
 private:
+	struct Callbacks {
+		std::function<void(const Allocation&)> onMatch;
+		std::function<void(const Shutdown&)> onStop;
+	};
+	static Allocation toAllocation(const gs_allocation* a) {
+		Allocation out;
+		out.game_server_id = gs_allocation_game_server_id(a);
+		out.external_id = gs_allocation_external_id(a);
+		for (std::size_t i = 0; gs_allocation_arg(a, i); i++) out.args.push_back(gs_allocation_arg(a, i));
+		for (std::size_t i = 0; gs_allocation_env_name(a, i); i++) out.env[gs_allocation_env_name(a, i)] = gs_allocation_env_value(a, i);
+		for (std::size_t i = 0; gs_allocation_label_name(a, i); i++) out.labels[gs_allocation_label_name(a, i)] = gs_allocation_label_value(a, i);
+		return out;
+	}
+	static void matchThunk(const gs_allocation* a, void* user) {
+		try {
+			static_cast<Callbacks*>(user)->onMatch(toAllocation(a));
+		} catch (...) {
+		}
+	}
+	static void stopThunk(std::int64_t deadline, const char* reason, void* user) {
+		try {
+			Shutdown s;
+			s.deadline_unix_ms = deadline;
+			s.reason = reason;
+			static_cast<Callbacks*>(user)->onStop(s);
+		} catch (...) {
+		}
+	}
 	explicit Client(gs_client* c) : c_(c) {}
 	void check(gs_result r) {
 		if (r != GS_OK) throw Error(r, gs_last_error(c_));
 	}
 	gs_client* c_ = nullptr;
+	std::unique_ptr<Callbacks> cb_;  // where the library's helper finds the callbacks; outlives it (gs_close joins it first)
 };
 
 }  // namespace gs

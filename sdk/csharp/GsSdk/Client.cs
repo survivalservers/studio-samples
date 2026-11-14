@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace GameServerSdk
 {
@@ -130,8 +131,89 @@ namespace GameServerSdk
             };
         }
 
+        sealed class Background
+        {
+            public readonly ManualResetEventSlim Stop = new ManualResetEventSlim(false);
+            public volatile bool Ended; // the stop notice came: the match wait answers at once from then on
+            public readonly List<Thread> Threads = new List<Thread>();
+        }
+
+        readonly object bgLock = new object();
+        Background? bg;
+
+        /// <summary>Sends health every <paramref name="healthEvery"/> (zero: none) and calls <paramref name="onMatch"/>
+        /// and <paramref name="onStop"/> once each, from threads of its own, when the match arrives and when the stop
+        /// notice comes (null: not waited for), as the C library's gs_background_start does. In Unity, hand what they do
+        /// to the main thread. <see cref="StopBackground"/> or Dispose ends it within about 5 seconds; never call either
+        /// from inside a callback. An exception a callback throws ends that callback only.</summary>
+        public void StartBackground(TimeSpan healthEvery, Action<Allocation>? onMatch, Action<Shutdown>? onStop)
+        {
+            if (healthEvery < TimeSpan.Zero || (healthEvery == TimeSpan.Zero && onMatch == null && onStop == null))
+                throw new GsException(-5, "the background helper needs health, onMatch or onStop");
+            var b = new Background();
+            lock (bgLock)
+            {
+                if (bg != null) throw new GsException(-5, "the background helper is already running");
+                bg = b;
+            }
+            if (healthEvery > TimeSpan.Zero)
+                Run(b, "gs health", () =>
+                {
+                    do { try { Health(); } catch (GsException) { } } while (!b.Stop.Wait(healthEvery));
+                });
+            if (onMatch != null)
+                Run(b, "gs match", () =>
+                {
+                    while (!b.Stop.IsSet)
+                    {
+                        Allocation? a = null;
+                        bool failed = false;
+                        try { a = WaitAllocation(TimeSpan.FromSeconds(5)); } catch (GsException) { failed = true; }
+                        if (a != null) { Quietly(() => onMatch(a)); return; }
+                        if (b.Ended) return;
+                        if (failed && b.Stop.Wait(TimeSpan.FromSeconds(1))) return; // the agent is away for a moment: ask again
+                    }
+                });
+            if (onStop != null)
+                Run(b, "gs shutdown", () =>
+                {
+                    while (!b.Stop.IsSet)
+                    {
+                        Shutdown? s = null;
+                        bool failed = false;
+                        try { s = WaitShutdown(TimeSpan.FromSeconds(5)); } catch (GsException) { failed = true; }
+                        if (s != null) { b.Ended = true; Quietly(() => onStop(s)); return; }
+                        if (failed && b.Stop.Wait(TimeSpan.FromSeconds(1))) return;
+                    }
+                });
+        }
+
+        /// <summary>Ends <see cref="StartBackground"/>'s helper and waits for it (up to about 5 seconds); never from a
+        /// callback.</summary>
+        public void StopBackground()
+        {
+            Background? b;
+            lock (bgLock) { b = bg; bg = null; }
+            if (b == null) return;
+            b.Stop.Set();
+            foreach (var t in b.Threads) t.Join();
+        }
+
+        static void Run(Background b, string name, Action body)
+        {
+            var t = new Thread(() => body()) { IsBackground = true, Name = name };
+            b.Threads.Add(t);
+            t.Start();
+        }
+
+        static void Quietly(Action a)
+        {
+            try { a(); } catch (Exception) { }
+        }
+
         public void Dispose()
         {
+            StopBackground();
             if (c != IntPtr.Zero)
             {
                 Native.gs_close(c);

@@ -22,6 +22,9 @@ func run() error {
 		return err
 	}
 	defer g.Close()
+	if os.Getenv("GS_SAMPLE_BACKGROUND") != "" {
+		return background(g)
+	}
 	if err := g.Ready(); err != nil {
 		return err
 	}
@@ -58,5 +61,48 @@ func run() error {
 		}
 	}
 	fmt.Printf("shutdown reason=%s deadline=%s\n", reason, deadline)
+	return nil
+}
+
+// background: with GS_SAMPLE_BACKGROUND set, the library's background helper sends health and calls the two functions
+// once each.
+func background(g *gs.Client) error {
+	matched, stopped := make(chan struct{}), make(chan *gs.Shutdown, 1)
+	err := g.StartBackground(200*time.Millisecond, func(m *gs.Allocation) {
+		fmt.Printf("match %s map=%s\n", m.ExternalID, m.Env["MAP"])
+		close(matched)
+	}, func(sd *gs.Shutdown) { stopped <- sd })
+	if err != nil {
+		return err
+	}
+	if err := g.Ready(); err != nil {
+		return err
+	}
+	select {
+	case <-matched:
+	case <-time.After(30 * time.Second):
+		return fmt.Errorf("no match")
+	}
+	if err := g.PlayerConnect("p1"); err != nil {
+		return err
+	}
+	if err := g.SetLabel("mode", "ffa"); err != nil {
+		return err
+	}
+	time.Sleep(1500 * time.Millisecond) // the helper sends health meanwhile
+	if err := g.Stop("match_over"); err != nil {
+		return err
+	}
+	reason, deadline := "none", "none"
+	select {
+	case sd := <-stopped:
+		reason = sd.Reason
+		if sd.Deadline.UnixMilli() > 0 {
+			deadline = "set"
+		}
+	case <-time.After(30 * time.Second):
+	}
+	fmt.Printf("shutdown reason=%s deadline=%s\n", reason, deadline)
+	g.StopBackground()
 	return nil
 }

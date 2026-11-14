@@ -1,7 +1,7 @@
 {
-  "name": "GameServerSample.Runtime",
+  "name": "GameServerSample",
   "rootNamespace": "GameServerSample",
-  "references": [],
+  "references": ["SurvivalServers.Unity"],
   "includePlatforms": [],
   "excludePlatforms": [],
   "allowUnsafeCode": false,

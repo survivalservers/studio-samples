@@ -3,6 +3,9 @@
 
 use std::ffi::{c_char, c_int, CStr, CString};
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 #[allow(non_camel_case_types)]
@@ -248,6 +251,103 @@ impl Client {
 impl Drop for Client {
     fn drop(&mut self) {
         unsafe { gs_close(self.c) }
+    }
+}
+
+/// A callback for the match, called once from the helper's own thread.
+pub type OnMatch = Box<dyn FnOnce(Allocation) + Send>;
+/// A callback for the shutdown notice, called once from the helper's own thread.
+pub type OnStop = Box<dyn FnOnce(Shutdown) + Send>;
+
+/// The background helper `Client::start_background` returns: health on its own, and the two callbacks. Dropping it,
+/// or `stop`, ends it within about 5 seconds; never from inside a callback.
+pub struct Background {
+    stop: Arc<(Mutex<bool>, Condvar)>,
+    threads: Vec<JoinHandle<()>>,
+}
+
+impl Background {
+    /// Ends the helper and waits for it.
+    pub fn stop(self) {}
+}
+
+impl Drop for Background {
+    fn drop(&mut self) {
+        *self.stop.0.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        self.stop.1.notify_all();
+        for t in self.threads.drain(..) {
+            let _ = t.join(); // a callback that panicked ends only itself
+        }
+    }
+}
+
+/// pause waits `d`, ending early once the helper is stopped; false when it was.
+fn pause(stop: &(Mutex<bool>, Condvar), d: Duration) -> bool {
+    let g = stop.0.lock().unwrap_or_else(|e| e.into_inner());
+    let (g, _) = stop.1.wait_timeout_while(g, d, |stopped| !*stopped).unwrap_or_else(|e| e.into_inner());
+    !*g
+}
+
+fn stopped(stop: &(Mutex<bool>, Condvar)) -> bool {
+    *stop.0.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl Client {
+    /// Sends health every `health_every` (zero: none) and calls `on_match` and `on_stop` once each, from threads of its
+    /// own, when the match arrives and when the stop notice comes (`None`: not waited for), as the C library's
+    /// gs_background_start does. Start it once per client; it runs until the returned `Background` is dropped.
+    pub fn start_background(
+        self: &Arc<Self>,
+        health_every: Duration,
+        on_match: Option<OnMatch>,
+        on_stop: Option<OnStop>,
+    ) -> Result<Background, Error> {
+        if health_every.is_zero() && on_match.is_none() && on_stop.is_none() {
+            return Err(Error { code: -5, message: "the background helper needs health, on_match or on_stop".into() });
+        }
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let ended = Arc::new(AtomicBool::new(false)); // the stop notice came: the match wait answers at once from then on
+        let mut threads = Vec::new();
+        if !health_every.is_zero() {
+            let (g, stop) = (Arc::clone(self), Arc::clone(&stop));
+            threads.push(std::thread::spawn(move || loop {
+                let _ = g.health();
+                if !pause(&stop, health_every) {
+                    return;
+                }
+            }));
+        }
+        if let Some(f) = on_match {
+            let (g, stop, ended) = (Arc::clone(self), Arc::clone(&stop), Arc::clone(&ended));
+            threads.push(std::thread::spawn(move || {
+                while !stopped(&stop) {
+                    match g.wait_allocation(Duration::from_secs(5)) {
+                        Ok(Some(a)) => return f(a),
+                        Ok(None) if ended.load(Ordering::SeqCst) => return,
+                        Ok(None) => {}
+                        Err(_) if !pause(&stop, Duration::from_secs(1)) => return, // the agent is away for a moment
+                        Err(_) => {}
+                    }
+                }
+            }));
+        }
+        if let Some(f) = on_stop {
+            let (g, stop, ended) = (Arc::clone(self), Arc::clone(&stop), Arc::clone(&ended));
+            threads.push(std::thread::spawn(move || {
+                while !stopped(&stop) {
+                    match g.wait_shutdown(Duration::from_secs(5)) {
+                        Ok(Some(s)) => {
+                            ended.store(true, Ordering::SeqCst);
+                            return f(s);
+                        }
+                        Ok(None) => {}
+                        Err(_) if !pause(&stop, Duration::from_secs(1)) => return,
+                        Err(_) => {}
+                    }
+                }
+            }));
+        }
+        Ok(Background { stop, threads })
     }
 }
 

@@ -9,8 +9,9 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using SurvivalServers.Unity;
 
-namespace GameServerSample.Core
+namespace GameServerSample
 {
 	/// <summary>
 	/// One match: a UDP game port, the players in it, and the optional calls to the local API. The "game" is a

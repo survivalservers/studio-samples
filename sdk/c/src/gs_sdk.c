@@ -1,8 +1,9 @@
 /*
  * gs_sdk: see gs_sdk.h. Licensed under the Apache License, Version 2.0.
  *
- * One HTTP/1.1 request per call over its own connection (Connection: close), so a client needs no locking around
- * the network and a long-poll never holds up another thread. The JSON reader is just big enough for the replies.
+ * One HTTP/1.1 request per call over its own connection (Connection: close), so a long-poll never holds up another
+ * thread. Only the players reports take turns, so the newest list lands last. The JSON reader is just big enough for
+ * the replies.
  */
 #define GS_SDK_BUILD 1
 #if defined(_MSC_VER) && !defined(_CRT_SECURE_NO_WARNINGS)
@@ -30,13 +31,29 @@ typedef CRITICAL_SECTION gs_mutex;
 #  define gs_mutex_lock(m) EnterCriticalSection(m)
 #  define gs_mutex_unlock(m) LeaveCriticalSection(m)
 #  define gs_mutex_free(m) DeleteCriticalSection(m)
+typedef HANDLE gs_thread;
+#  define GS_THREAD_FN(name) static DWORD WINAPI name(LPVOID arg)
+#  define GS_THREAD_RETURN return 0
+static void gs_sleep_ms(int ms) { Sleep((DWORD)ms); }
+static unsigned long long gs_now_ms(void) { return (unsigned long long)GetTickCount64(); }
+static int gs_thread_start(gs_thread *t, LPTHREAD_START_ROUTINE fn, void *arg) {
+	*t = CreateThread(NULL, 0, fn, arg, 0, NULL);
+	return *t != NULL;
+}
+static void gs_thread_join(gs_thread t) {
+	WaitForSingleObject(t, INFINITE);
+	CloseHandle(t);
+}
 #  ifdef _MSC_VER
 #    pragma comment(lib, "ws2_32.lib")
 #  endif
 #else
+#  include <errno.h>
+#  include <fcntl.h>
 #  include <netdb.h>
 #  include <netinet/in.h>
 #  include <netinet/tcp.h>
+#  include <poll.h>
 #  include <pthread.h>
 #  include <sys/socket.h>
 #  include <sys/time.h>
@@ -50,20 +67,60 @@ typedef pthread_mutex_t gs_mutex;
 #  define gs_mutex_lock(m) pthread_mutex_lock(m)
 #  define gs_mutex_unlock(m) pthread_mutex_unlock(m)
 #  define gs_mutex_free(m) pthread_mutex_destroy(m)
+#  include <time.h>
+typedef pthread_t gs_thread;
+#  define GS_THREAD_FN(name) static void *name(void *arg)
+#  define GS_THREAD_RETURN return NULL
+static void gs_sleep_ms(int ms) {
+	struct timespec ts;
+	ts.tv_sec = ms / 1000;
+	ts.tv_nsec = (long)(ms % 1000) * 1000000L;
+	nanosleep(&ts, NULL);
+}
+static unsigned long long gs_now_ms(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (unsigned long long)ts.tv_sec * 1000ull + (unsigned long long)ts.tv_nsec / 1000000ull;
+}
+static int gs_thread_start(gs_thread *t, void *(*fn)(void *), void *arg) { return pthread_create(t, NULL, fn, arg) == 0; }
+static void gs_thread_join(gs_thread t) { pthread_join(t, NULL); }
 #endif
 
 #define GS_MAX_REPLY (1 << 20)
 #define GS_ERR_SIZE 256
+#define GS_CONNECT_MS 3000      /* how long a connection to the agent may take to open */
+#define GS_MAX_PLAYER_IDS 1000  /* the agent's limits on one players report */
+#define GS_MAX_BODY (64 * 1024)
+
+/* A send never raises SIGPIPE when the agent has closed its end: the call fails instead. */
+#ifdef MSG_NOSIGNAL
+#  define GS_SEND_FLAGS MSG_NOSIGNAL
+#else
+#  define GS_SEND_FLAGS 0
+#endif
 
 struct gs_client {
 	char host[256];
 	char port[8];
 	char base[256]; /* path before /v0, usually empty */
 	char *token;
-	gs_mutex mu; /* guards err and the player list */
+	gs_mutex mu; /* guards err, the player list and the background helper's state */
 	char err[GS_ERR_SIZE];
 	char **players;
 	size_t nplayers, capplayers;
+	unsigned long players_gen; /* counts the list's changes (under mu) */
+	/* One players report in flight at a time, so the newest list goes last. Under send_mu: the change the agent
+	 * last took, valid when players_sent. */
+	gs_mutex send_mu;
+	unsigned long players_sent_gen;
+	int players_sent;
+	/* The background helper (gs_background_start); its flags under mu. bg_state: 0 off, 1 running, 2 stopping. */
+	gs_thread bg[3];
+	int nbg, bg_state, bg_stop, bg_ended;
+	int health_every_ms;
+	gs_on_match on_match;
+	gs_on_stop on_stop;
+	void *user;
 };
 
 /* --- small helpers ------------------------------------------------------------------------------------------- */
@@ -430,6 +487,60 @@ static int dechunk(char *b, size_t *len) {
 	return 1;
 }
 
+/* connect_within opens s to the address, waiting at most ms: an agent that never answers the connection fails the call
+ * instead of holding the game's thread for the system's own limit, which can be minutes. 1 when it is open. */
+static int connect_within(gs_socket s, const struct sockaddr *addr, size_t len, int ms) {
+	int ok, err = 0;
+#ifdef _WIN32
+	u_long on = 1, off = 0;
+	int el = (int)sizeof err;
+	if (ioctlsocket(s, FIONBIO, &on) != 0) return connect(s, addr, (int)len) == 0;
+	if (connect(s, addr, (int)len) == 0) {
+		ok = 1;
+	} else if (WSAGetLastError() != WSAEWOULDBLOCK) {
+		ok = 0;
+	} else {
+		fd_set w, e;
+		struct timeval tv;
+		FD_ZERO(&w);
+		FD_ZERO(&e);
+		FD_SET(s, &w);
+		FD_SET(s, &e);
+		tv.tv_sec = ms / 1000;
+		tv.tv_usec = (ms % 1000) * 1000;
+		ok = select(0, NULL, &w, &e, &tv) > 0 && FD_ISSET(s, &w) &&
+		     getsockopt(s, SOL_SOCKET, SO_ERROR, (char *)&err, &el) == 0 && err == 0;
+	}
+	ioctlsocket(s, FIONBIO, &off);
+#else
+	int flags = fcntl(s, F_GETFL, 0);
+	socklen_t el = (socklen_t)sizeof err;
+	if (flags < 0 || fcntl(s, F_SETFL, flags | O_NONBLOCK) < 0) return connect(s, addr, (socklen_t)len) == 0;
+	if (connect(s, addr, (socklen_t)len) == 0) {
+		ok = 1;
+	} else if (errno != EINPROGRESS) {
+		ok = 0;
+	} else {
+		struct pollfd p;
+		int n;
+		p.fd = s;
+		p.events = POLLOUT;
+		p.revents = 0;
+		do n = poll(&p, 1, ms);
+		while (n < 0 && errno == EINTR);
+		ok = n > 0 && getsockopt(s, SOL_SOCKET, SO_ERROR, &err, &el) == 0 && err == 0;
+	}
+	fcntl(s, F_SETFL, flags);
+#  ifdef SO_NOSIGPIPE
+	if (ok) { /* systems without MSG_NOSIGNAL */
+		int one = 1;
+		setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &one, (socklen_t)sizeof one);
+	}
+#  endif
+#endif
+	return ok;
+}
+
 /* call makes one request and reads the whole reply. timeout_ms bounds waiting for it. */
 static gs_result call(gs_client *c, const char *method, const char *path, const char *body, int timeout_ms, reply *out) {
 	struct addrinfo hints, *res = NULL, *ai;
@@ -449,7 +560,7 @@ static gs_result call(gs_client *c, const char *method, const char *path, const 
 	for (ai = res; ai; ai = ai->ai_next) {
 		s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
 		if (s == GS_BAD_SOCKET) continue;
-		if (connect(s, ai->ai_addr, (int)ai->ai_addrlen) == 0) break;
+		if (connect_within(s, ai->ai_addr, (size_t)ai->ai_addrlen, timeout_ms < GS_CONNECT_MS ? timeout_ms : GS_CONNECT_MS)) break;
 		gs_closesocket(s);
 		s = GS_BAD_SOCKET;
 	}
@@ -491,7 +602,7 @@ static gs_result call(gs_client *c, const char *method, const char *path, const 
 		goto done;
 	}
 	while (sent < req.n) {
-		int n = (int)send(s, req.p + sent, (int)(req.n - sent), 0);
+		int n = (int)send(s, req.p + sent, (int)(req.n - sent), GS_SEND_FLAGS);
 		if (n <= 0) {
 			r = fail(c, GS_ERR_CONNECT, "sending to the agent failed%s", "");
 			goto done;
@@ -577,6 +688,21 @@ static gs_result simple(gs_client *c, const char *method, const char *path, cons
 	return r;
 }
 
+/* safe is simple for a call that may be sent again (ready, health, players, labels, frame times): a connection error
+ * that came at once (refused, reset) is tried again, at most three tries with 200 and 400 ms between them. One after a
+ * whole timeout is not: the agent is not answering, and the game should not wait three times as long. */
+static gs_result safe(gs_client *c, const char *method, const char *path, const char *body, int ok1, int ok2) {
+	gs_result r = GS_ERR_CONNECT;
+	int attempt;
+	for (attempt = 0; attempt < 3; attempt++) {
+		unsigned long long t0 = gs_now_ms();
+		r = simple(c, method, path, body, ok1, ok2);
+		if (r != GS_ERR_CONNECT || gs_now_ms() - t0 >= 1000) return r;
+		if (attempt < 2) gs_sleep_ms(200 * (attempt + 1));
+	}
+	return r;
+}
+
 /* --- the calls ------------------------------------------------------------------------------------------------- */
 
 int gs_sdk_version(void) { return GS_SDK_VERSION; }
@@ -639,6 +765,7 @@ gs_result gs_open_with(const char *agent_url, const char *token, gs_client **out
 		return GS_ERR_MEMORY;
 	}
 	gs_mutex_init(&c->mu);
+	gs_mutex_init(&c->send_mu);
 	*out = c;
 	return GS_OK;
 }
@@ -646,18 +773,20 @@ gs_result gs_open_with(const char *agent_url, const char *token, gs_client **out
 void gs_close(gs_client *c) {
 	size_t i;
 	if (!c) return;
+	gs_background_stop(c);
 	for (i = 0; i < c->nplayers; i++) free(c->players[i]);
 	free(c->players);
 	free(c->token);
+	gs_mutex_free(&c->send_mu);
 	gs_mutex_free(&c->mu);
 	free(c);
 }
 
 const char *gs_last_error(const gs_client *c) { return c ? c->err : "no client"; }
 
-gs_result gs_ready(gs_client *c) { return simple(c, "POST", "/v0/self/ready", NULL, 204, 200); }
+gs_result gs_ready(gs_client *c) { return safe(c, "POST", "/v0/self/ready", NULL, 204, 200); }
 
-gs_result gs_health(gs_client *c) { return simple(c, "POST", "/v0/self/health", NULL, 204, 200); }
+gs_result gs_health(gs_client *c) { return safe(c, "POST", "/v0/self/health", NULL, 204, 200); }
 
 gs_result gs_stop(gs_client *c, const char *reason) {
 	buf b = {0};
@@ -833,21 +962,49 @@ gs_result gs_wait_shutdown(gs_client *c, int wait_ms, int64_t *deadline_unix_ms,
 	return GS_OK;
 }
 
-/* send_players sends the whole list (taken under the lock, sent outside it). */
+/* send_players sends the list as it is when this report's turn comes. One report is in flight at a time (send_mu) and
+ * the list is read only once that turn comes, so the agent's last report is always the newest list, whichever thread
+ * changed it; a report that finds the newest list already taken sends nothing. A list past the agent's limits (1,000
+ * IDs, 64 KiB) is sent as its count alone, which the agent takes, and the list again once it fits. */
 static gs_result send_players(gs_client *c) {
 	buf b = {0};
-	size_t i;
+	size_t i, n;
+	unsigned long gen;
 	gs_result r;
+	char count[64];
+	gs_mutex_lock(&c->send_mu);
 	gs_mutex_lock(&c->mu);
-	puts_(&b, "{\"ids\":[");
-	for (i = 0; i < c->nplayers; i++) {
-		if (i) puts_(&b, ",");
-		putjstr(&b, c->players[i]);
+	gen = c->players_gen;
+	n = c->nplayers;
+	if (c->players_sent && c->players_sent_gen == gen) {
+		gs_mutex_unlock(&c->mu);
+		gs_mutex_unlock(&c->send_mu);
+		return GS_OK;
 	}
-	puts_(&b, "]}");
+	if (n <= GS_MAX_PLAYER_IDS) {
+		puts_(&b, "{\"ids\":[");
+		for (i = 0; i < n; i++) {
+			if (i) puts_(&b, ",");
+			putjstr(&b, c->players[i]);
+		}
+		puts_(&b, "]}");
+	}
 	gs_mutex_unlock(&c->mu);
-	if (b.bad) return GS_ERR_MEMORY;
-	r = simple(c, "PUT", "/v0/self/players", b.p, 200, 204);
+	if (n > GS_MAX_PLAYER_IDS || (!b.bad && b.n > GS_MAX_BODY)) {
+		free(b.p);
+		b.p = NULL;
+		snprintf(count, sizeof count, "{\"count\":%lu}", (unsigned long)n);
+	}
+	if (b.bad) {
+		r = GS_ERR_MEMORY;
+	} else {
+		r = safe(c, "PUT", "/v0/self/players", b.p ? b.p : count, 200, 204);
+		if (r == GS_OK) {
+			c->players_sent = 1;
+			c->players_sent_gen = gen;
+		}
+	}
+	gs_mutex_unlock(&c->send_mu);
 	free(b.p);
 	return r;
 }
@@ -910,6 +1067,7 @@ gs_result gs_player_connect(gs_client *c, const char *player_id) {
 		return GS_ERR_MEMORY;
 	}
 	c->nplayers++;
+	c->players_gen++;
 	gs_mutex_unlock(&c->mu);
 	return send_players(c);
 }
@@ -923,6 +1081,7 @@ gs_result gs_player_disconnect(gs_client *c, const char *player_id) {
 			free(c->players[i]);
 			memmove(c->players + i, c->players + i + 1, (c->nplayers - i - 1) * sizeof *c->players);
 			c->nplayers--;
+			c->players_gen++;
 			gs_mutex_unlock(&c->mu);
 			return send_players(c);
 		}
@@ -933,9 +1092,14 @@ gs_result gs_player_disconnect(gs_client *c, const char *player_id) {
 
 gs_result gs_set_player_count(gs_client *c, int count) {
 	char body[64];
+	gs_result r;
 	if (!c || count < 0) return GS_ERR_ARGUMENT;
 	snprintf(body, sizeof body, "{\"count\":%d}", count);
-	return simple(c, "PUT", "/v0/self/players", body, 200, 204);
+	gs_mutex_lock(&c->send_mu); /* in turn with the list's reports; the next list report is sent whatever it holds */
+	r = safe(c, "PUT", "/v0/self/players", body, 200, 204);
+	c->players_sent = 0;
+	gs_mutex_unlock(&c->send_mu);
+	return r;
 }
 
 gs_result gs_set_label(gs_client *c, const char *name, const char *value) {
@@ -949,7 +1113,7 @@ gs_result gs_set_label(gs_client *c, const char *name, const char *value) {
 	else puts_(&b, "null");
 	puts_(&b, "}");
 	if (b.bad) return GS_ERR_MEMORY;
-	r = simple(c, "PATCH", "/v0/self/labels", b.p, 200, 204);
+	r = safe(c, "PATCH", "/v0/self/labels", b.p, 200, 204);
 	free(b.p);
 	return r;
 }
@@ -967,5 +1131,129 @@ gs_result gs_tick(gs_client *c, double p50_ms, double p99_ms, int hz) {
 	ms(b, sizeof b, p99_ms);
 	if (hz > 0) snprintf(body, sizeof body, "{\"p50_ms\":%s,\"p99_ms\":%s,\"hz\":%d}", a, b, hz);
 	else snprintf(body, sizeof body, "{\"p50_ms\":%s,\"p99_ms\":%s}", a, b);
-	return simple(c, "POST", "/v0/self/tick", body, 204, 200);
+	return safe(c, "POST", "/v0/self/tick", body, 204, 200);
+}
+
+/* --- the background helper ----------------------------------------------------------------------------------- */
+
+static int bg_flag(gs_client *c, int *flag) {
+	int v;
+	gs_mutex_lock(&c->mu);
+	v = *flag;
+	gs_mutex_unlock(&c->mu);
+	return v;
+}
+
+/* bg_pause waits ms in short steps, ending early once the helper is stopped; 0 when it was. */
+static int bg_pause(gs_client *c, int ms) {
+	while (ms > 0 && !bg_flag(c, &c->bg_stop)) {
+		int step = ms < 100 ? ms : 100;
+		gs_sleep_ms(step);
+		ms -= step;
+	}
+	return !bg_flag(c, &c->bg_stop);
+}
+
+GS_THREAD_FN(bg_health) {
+	gs_client *c = (gs_client *)arg;
+	do {
+		gs_health(c);
+	} while (bg_pause(c, c->health_every_ms));
+	GS_THREAD_RETURN;
+}
+
+GS_THREAD_FN(bg_match) {
+	gs_client *c = (gs_client *)arg;
+	while (!bg_flag(c, &c->bg_stop) && !bg_flag(c, &c->bg_ended)) {
+		gs_allocation *a = NULL;
+		gs_result r = gs_wait_allocation(c, 5000, &a);
+		if (r == GS_OK) {
+			c->on_match(a, c->user);
+			gs_allocation_free(a);
+			break;
+		}
+		if (r != GS_ERR_NONE_YET && !bg_pause(c, 1000)) break; /* the agent is away for a moment: ask again */
+		if (r == GS_ERR_NONE_YET && bg_flag(c, &c->bg_ended)) break;
+	}
+	GS_THREAD_RETURN;
+}
+
+GS_THREAD_FN(bg_shutdown) {
+	gs_client *c = (gs_client *)arg;
+	while (!bg_flag(c, &c->bg_stop)) {
+		int64_t deadline = 0;
+		char reason[64];
+		gs_result r = gs_wait_shutdown(c, 5000, &deadline, reason, sizeof reason);
+		if (r == GS_OK) {
+			gs_mutex_lock(&c->mu);
+			c->bg_ended = 1; /* the match wait answers at once from now on: it ends */
+			gs_mutex_unlock(&c->mu);
+			c->on_stop(deadline, reason, c->user);
+			break;
+		}
+		if (r != GS_ERR_NONE_YET && !bg_pause(c, 1000)) break;
+	}
+	GS_THREAD_RETURN;
+}
+
+/* bg_join ends the helper's threads: its state is 2 (stopping), so no other start or stop touches them meanwhile. */
+static void bg_join(gs_client *c) {
+	int i;
+	gs_mutex_lock(&c->mu);
+	c->bg_stop = 1;
+	gs_mutex_unlock(&c->mu);
+	for (i = 0; i < c->nbg; i++) gs_thread_join(c->bg[i]);
+	gs_mutex_lock(&c->mu);
+	c->nbg = 0;
+	c->bg_state = 0;
+	gs_mutex_unlock(&c->mu);
+}
+
+gs_result gs_background_start(gs_client *c, int health_every_ms, gs_on_match on_match, gs_on_stop on_stop, void *user) {
+	int want = 0, started = 0;
+	if (!c || health_every_ms < 0 || (health_every_ms == 0 && !on_match && !on_stop)) return GS_ERR_ARGUMENT;
+	gs_mutex_lock(&c->mu);
+	if (c->bg_state != 0) {
+		gs_mutex_unlock(&c->mu);
+		return fail(c, GS_ERR_ARGUMENT, "%s", "the background helper is already running");
+	}
+	/* The threads start while the lock is held: each waits for it before its first look at the flags. */
+	c->bg_state = 1;
+	c->bg_stop = 0;
+	c->bg_ended = 0;
+	c->nbg = 0;
+	c->health_every_ms = health_every_ms;
+	c->on_match = on_match;
+	c->on_stop = on_stop;
+	c->user = user;
+	if (health_every_ms > 0) {
+		want++;
+		if (gs_thread_start(&c->bg[c->nbg], bg_health, c)) c->nbg++;
+	}
+	if (on_match) {
+		want++;
+		if (gs_thread_start(&c->bg[c->nbg], bg_match, c)) c->nbg++;
+	}
+	if (on_stop) {
+		want++;
+		if (gs_thread_start(&c->bg[c->nbg], bg_shutdown, c)) c->nbg++;
+	}
+	started = c->nbg;
+	if (started < want) c->bg_state = 2;
+	gs_mutex_unlock(&c->mu);
+	if (started < want) { /* all or nothing: end what did start */
+		bg_join(c);
+		return fail(c, GS_ERR_MEMORY, "%s", "no thread for the background helper");
+	}
+	return GS_OK;
+}
+
+void gs_background_stop(gs_client *c) {
+	int running;
+	if (!c) return;
+	gs_mutex_lock(&c->mu);
+	running = c->bg_state == 1;
+	if (running) c->bg_state = 2;
+	gs_mutex_unlock(&c->mu);
+	if (running) bg_join(c);
 }

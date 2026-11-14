@@ -2,3 +2,4 @@
 command = "survivalservers"
 args = ["mcp"]
 env = { GS_API_URL = "https://studio.survivalservers.com" }
+env_vars = ["GS_API_KEY"]

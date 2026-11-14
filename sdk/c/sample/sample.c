@@ -3,8 +3,40 @@
  *   survivalservers dev -warm -allocate-after 1s -env MAP=dunes -external-id m42 -stop local_api -- ./sample */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#ifdef _WIN32
+#  include <windows.h>
+static void sleep_ms(int ms) { Sleep((DWORD)ms); }
+#else
+#  include <time.h>
+static void sleep_ms(int ms) {
+	struct timespec ts;
+	ts.tv_sec = ms / 1000;
+	ts.tv_nsec = (long)(ms % 1000) * 1000000L;
+	nanosleep(&ts, NULL);
+}
+#endif
 
 #include "gs_sdk.h"
+
+/* With GS_SAMPLE_BACKGROUND set, the library's background helper sends health and calls these once each. */
+static volatile int matched, stopped;
+static char stop_reason[64];
+static int64_t stop_deadline;
+
+static void on_match(const gs_allocation *a, void *user) {
+	(void)user;
+	printf("match %s map=%s\n", gs_allocation_external_id(a), gs_allocation_env(a, "MAP") ? gs_allocation_env(a, "MAP") : "-");
+	fflush(stdout);
+	matched = 1;
+}
+
+static void on_stop(int64_t deadline_unix_ms, const char *reason, void *user) {
+	(void)user;
+	snprintf(stop_reason, sizeof stop_reason, "%s", reason);
+	stop_deadline = deadline_unix_ms;
+	stopped = 1;
+}
 
 #define CHECK(call)                                                                       \
 	do {                                                                                  \
@@ -23,6 +55,21 @@ int main(void) {
 	if (gs_open(&c) != GS_OK) {
 		fprintf(stderr, "no local API here (GS_LOCAL_API_URL and GS_TOKEN are not set)\n");
 		return 2;
+	}
+	if (getenv("GS_SAMPLE_BACKGROUND")) {
+		int waited;
+		CHECK(gs_background_start(c, 200, on_match, on_stop, NULL));
+		CHECK(gs_ready(c));
+		for (waited = 0; !matched && waited < 30000; waited += 20) sleep_ms(20);
+		CHECK(gs_player_connect(c, "p1"));
+		CHECK(gs_set_label(c, "mode", "ffa"));
+		sleep_ms(1500); /* the helper sends health meanwhile */
+		CHECK(gs_stop(c, "match_over"));
+		for (waited = 0; !stopped && waited < 30000; waited += 20) sleep_ms(20);
+		printf("shutdown reason=%s deadline=%s\n", stop_reason, stop_deadline > 0 ? "set" : "none");
+		fflush(stdout);
+		gs_close(c); /* stops the helper */
+		return 0;
 	}
 	CHECK(gs_ready(c));
 	CHECK(gs_wait_allocation(c, 30000, &a));

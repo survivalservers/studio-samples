@@ -6,7 +6,8 @@
  * Licensed under the Apache License, Version 2.0.
  *
  * Every call returns GS_OK or a negative gs_result; gs_last_error() says why. A client may be used from several
- * threads; the waiting calls block only the thread that makes them.
+ * threads; the waiting calls block only the thread that makes them. A connection to the agent that does not open
+ * within 3 seconds fails the call (GS_ERR_CONNECT).
  */
 #ifndef GS_SDK_H
 #define GS_SDK_H
@@ -31,7 +32,7 @@ extern "C" {
 #endif
 
 /* The SDK version this header describes. A later version only adds functions. */
-#define GS_SDK_VERSION 2
+#define GS_SDK_VERSION 3
 
 typedef enum gs_result {
 	GS_OK = 0,
@@ -92,10 +93,12 @@ GS_API void gs_allocation_free(gs_allocation *a);
  * may be NULL. GS_ERR_NONE_YET when there is none. */
 GS_API gs_result gs_wait_shutdown(gs_client *c, int wait_ms, int64_t *deadline_unix_ms, char *reason, size_t reason_size);
 
-/* Players: the client keeps the list and sends it whole on each change. The player count is also what pauses an empty
- * persistent server (when it is set to pause when empty). gs_set_player_count is for games that count without IDs.
+/* Players: the client keeps the list and sends it whole on each change, one report at a time, so the agent's last
+ * report is the newest list whichever thread changed it. The player count is also what pauses an empty persistent
+ * server (when it is set to pause when empty). gs_set_player_count is for games that count without IDs.
  * A player ID is 1 to 128 characters of UTF-8 with no control characters: gs_player_connect refuses any other
- * (GS_ERR_ARGUMENT, often a name a player chose) and it never joins the list. */
+ * (GS_ERR_ARGUMENT, often a name a player chose) and it never joins the list. The agent takes a list of at most 1,000
+ * IDs and 64 KiB; past either, the client sends the count alone, and the list again once it fits. */
 GS_API gs_result gs_player_connect(gs_client *c, const char *player_id);
 GS_API gs_result gs_player_disconnect(gs_client *c, const char *player_id);
 GS_API gs_result gs_set_player_count(gs_client *c, int count);
@@ -105,6 +108,17 @@ GS_API gs_result gs_set_label(gs_client *c, const char *name, const char *value)
 
 /* gs_tick reports one second of update times (p50 and p99 in milliseconds) and the update rate, if known (0). */
 GS_API gs_result gs_tick(gs_client *c, double p50_ms, double p99_ms, int hz);
+
+/* The background helper (version 3): health every health_every_ms (0: none), and on_match and on_stop each called once,
+ * from a thread of the library's, when the match arrives and when the stop notice comes (NULL: not waited for). The
+ * allocation is freed after on_match returns; on_stop gets the deadline and reason, as gs_wait_shutdown does. Start it
+ * once per client; gs_background_stop (or gs_close) ends it, within about 5 seconds, and is never called from inside
+ * on_match or on_stop. Calls that may be sent again (ready, health, players, labels, frame times) are tried up to
+ * three times on a connection error that came at once. */
+typedef void (*gs_on_match)(const gs_allocation *a, void *user);
+typedef void (*gs_on_stop)(int64_t deadline_unix_ms, const char *reason, void *user);
+GS_API gs_result gs_background_start(gs_client *c, int health_every_ms, gs_on_match on_match, gs_on_stop on_stop, void *user);
+GS_API void gs_background_stop(gs_client *c);
 
 #ifdef __cplusplus
 }
