@@ -5,9 +5,9 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace GameServerSample.Core
+namespace SurvivalServers.Unity
 {
-	/// <summary>The local API over HttpClient. Works in Unity server builds too; the sample's default there is UnityWebRequest.</summary>
+	/// <summary>The local API over HttpClient. Works in Unity server builds too; the sample game uses UnityWebRequestTransport there.</summary>
 	public sealed class HttpClientTransport : ILocalTransport, IDisposable
 	{
 		private readonly HttpClient _http;

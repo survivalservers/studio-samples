@@ -13,6 +13,7 @@ import "C"
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 )
@@ -41,7 +42,11 @@ type Shutdown struct {
 }
 
 // Client is the game server's side of the local API. It may be used from several goroutines.
-type Client struct{ c *C.gs_client }
+type Client struct {
+	c  *C.gs_client
+	mu sync.Mutex
+	bg *background // StartBackground's, while it runs
+}
 
 // FromEnv connects as the game server the machine started (GS_LOCAL_API_URL, GS_TOKEN).
 func FromEnv() (*Client, error) {
@@ -53,7 +58,7 @@ func FromEnv() (*Client, error) {
 		}
 		return nil, &Error{int(r), msg}
 	}
-	return &Client{c}, nil
+	return &Client{c: c}, nil
 }
 
 // Open connects with a given address and token.
@@ -65,11 +70,12 @@ func Open(agentURL, token string) (*Client, error) {
 	if r := C.gs_open_with(u, t, &c); r != C.GS_OK {
 		return nil, &Error{int(r), "gs_open_with failed"}
 	}
-	return &Client{c}, nil
+	return &Client{c: c}, nil
 }
 
-// Close lets go of the client.
+// Close lets go of the client, ending its background helper first.
 func (g *Client) Close() {
+	g.StopBackground()
 	if g.c != nil {
 		C.gs_close(g.c)
 		g.c = nil
@@ -195,4 +201,111 @@ func (g *Client) RemoveLabel(name string) error {
 // Tick reports one second of update times and the update rate, when known (0 otherwise).
 func (g *Client) Tick(p50ms, p99ms float64, hz int) error {
 	return g.check(C.gs_tick(g.c, C.double(p50ms), C.double(p99ms), C.int(hz)))
+}
+
+type background struct {
+	stop  chan struct{} // closed by StopBackground
+	ended chan struct{} // closed once the stop notice came: the match wait answers at once from then on
+	wg    sync.WaitGroup
+}
+
+// pause waits d, ending early once the helper is stopped; false when it was.
+func (b *background) pause(d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-b.stop:
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+func (b *background) stopped() bool {
+	select {
+	case <-b.stop:
+		return true
+	default:
+		return false
+	}
+}
+
+// StartBackground sends health every healthEvery (zero: none) and calls onMatch and onStop once each, from goroutines
+// of its own, when the match arrives and when the stop notice comes (nil: not waited for), as the C library's
+// gs_background_start does. StopBackground or Close ends it within about 5 seconds; never call either from inside a
+// callback. Start it once per client.
+func (g *Client) StartBackground(healthEvery time.Duration, onMatch func(*Allocation), onStop func(*Shutdown)) error {
+	if healthEvery < 0 || (healthEvery == 0 && onMatch == nil && onStop == nil) {
+		return &Error{-5, "the background helper needs health, onMatch or onStop"}
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.bg != nil {
+		return &Error{-5, "the background helper is already running"}
+	}
+	b := &background{stop: make(chan struct{}), ended: make(chan struct{})}
+	g.bg = b
+	if healthEvery > 0 {
+		b.wg.Add(1)
+		go func() {
+			defer b.wg.Done()
+			for {
+				g.Health()
+				if !b.pause(healthEvery) {
+					return
+				}
+			}
+		}()
+	}
+	if onMatch != nil {
+		b.wg.Add(1)
+		go func() {
+			defer b.wg.Done()
+			for !b.stopped() {
+				a, err := g.WaitAllocation(5 * time.Second)
+				if a != nil {
+					onMatch(a)
+					return
+				}
+				select {
+				case <-b.ended:
+					return
+				default:
+				}
+				if err != nil && !b.pause(time.Second) { // the agent is away for a moment: ask again
+					return
+				}
+			}
+		}()
+	}
+	if onStop != nil {
+		b.wg.Add(1)
+		go func() {
+			defer b.wg.Done()
+			for !b.stopped() {
+				sd, err := g.WaitShutdown(5 * time.Second)
+				if sd != nil {
+					close(b.ended)
+					onStop(sd)
+					return
+				}
+				if err != nil && !b.pause(time.Second) {
+					return
+				}
+			}
+		}()
+	}
+	return nil
+}
+
+// StopBackground ends StartBackground's helper and waits for it (up to about 5 seconds); never from a callback.
+func (g *Client) StopBackground() {
+	g.mu.Lock()
+	b := g.bg
+	g.bg = nil
+	g.mu.Unlock()
+	if b != nil {
+		close(b.stop)
+		b.wg.Wait()
+	}
 }

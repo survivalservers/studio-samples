@@ -194,18 +194,21 @@ GODOT=/path/to/godot go test ./                  # the demo against a fake local
 
 ## The Unity sample
 
-A Unity package (`unity/`, add it by path or git URL). Its plain C# part (`Runtime/Core`: the game port, the match
-rules and every local API call) has no UnityEngine types, so it also runs in plain .NET; the Unity layer is one
-component, `GameServerBehaviour`, that calls it every frame through `UnityWebRequest`, plus an editor script for
-dedicated server builds (menu Game Server, or `-executeMethod GameServerSample.Editor.GameServerBuild.Windows`).
+A Unity package (`unity/`, add it by path or git URL) with the calls, under `SurvivalServers.Unity`. Its
+plain C# part (`Runtime/Core`: the settings from the environment and every local API call) has no UnityEngine types,
+so it also runs in plain .NET; `Runtime/Unity` makes the calls through `UnityWebRequest`, and an editor script makes
+dedicated server builds (menu Survival Servers Studio, or
+`-executeMethod SurvivalServers.Unity.Editor.GameServerBuild.Windows`). The sample game is in the package's
+`Samples~/SampleGame` (the Package Manager imports it): the game port and the match rules, and one component,
+`GameServerBehaviour`, that runs them every frame.
 `LocalApi` uses the custom-engine SDK's names: `Ready`, `Health`, `Stop`, `WaitAllocation`, `WaitShutdown`,
 `PlayerConnect` and `PlayerDisconnect` (it keeps the list and sends it whole), `SetPlayerCount`, `SetLabel`,
 `RemoveLabel` and `Tick`; waits are at most 60 seconds.
 
 ```bash
 cd unity
-dotnet test "Tests~/Core"               # the plain C# part: match life, game protocol, settings, HTTP calls
-dotnet build "Tests~/EngineCompile"     # the Unity layer against stand-ins for the engine types (a compile check)
+dotnet test "Tests~/Core"               # the plain C# part and the sample's match: life, protocol, settings, calls
+dotnet build "Tests~/EngineCompile"     # the Unity layer and the sample against stand-ins for the engine types
 ```
 
 Both versions stop through the local API. The package has never run in a Unity player, so how it takes Ctrl+Break

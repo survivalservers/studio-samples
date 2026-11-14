@@ -23,6 +23,7 @@ no SDK, and `../localapi/openapi.yaml`). It is for engines with no HTTP client a
 | End itself (the match is over) | `gs_stop` | `Stop` | `stop` |
 | A persistent server just finished a save | `gs_saved` | `Saved` | `saved` |
 | Wait for a shutdown notice: save and exit before its deadline | `gs_wait_shutdown` | `WaitShutdown` | `wait_shutdown` |
+| Health, the match and the notice on their own threads | `gs_background_start` / `gs_background_stop` | `StartBackground` / `StopBackground` | `start_background` (drop the `Background` to end it) |
 
 Each sample (`c/sample`, `cpp/sample.cpp`, `csharp/Sample`, `rust/examples/sample.rs`, `go/sample`) makes the same
 calls in the same order, in about 30 lines.
@@ -31,7 +32,9 @@ What to know:
 
 - **Not under an agent?** `gs_open` returns `GS_ERR_NO_AGENT` (the other layers return that error), so the same
   build can run as a plain local server.
-- **Players are the pause signal.** The client keeps the list and sends it whole on every connect and disconnect.
+- **Players are the pause signal.** The client keeps the list and sends it whole on every connect and disconnect,
+  one report at a time, so the agent's last report is the newest list. The agent takes at most 1,000 IDs and
+  64 KiB in one list; past either, the client sends the count alone, and the list again once it fits.
   A persistent server set to pause when empty (`when_empty`) is paused once its count stays at zero for the time
   set, and the next player's first packet resumes it.
   Report players promptly, and never report zero while someone is still playing.
@@ -43,11 +46,17 @@ What to know:
   that waits for the shutdown notice gets the notice first, and the signal only if it is still running halfway through
   its shutdown time; a game that never waits for the notice gets both at once. The samples run with the stop method
   `local_api` (the notice only); a real game should handle the signal too, or use that stop method.
-- **Threads:** one client may be used from several threads. Each call uses its own connection.
+- **Threads:** one client may be used from several threads. Each call uses its own connection, and one that does
+  not open within 3 seconds fails with `GS_ERR_CONNECT`.
+- **The background helper** (optional) sends health on a timer and calls your code back once when the match
+  arrives and once when the shutdown notice comes, from threads of its own: in an engine, hand that work to the
+  main thread. Start it once per client; closing the client ends it within about 5 seconds.
+- **Short retries:** ready, health, players, labels and update times are tried up to three times, 200 and 400 ms
+  apart, when the connection failed within a second (an agent restarting). A call that timed out is not sent again.
 - **Secrets:** settings marked secret arrive only through the allocation call. The library never writes them out.
 - **Errors** are negative `gs_result` codes; `gs_last_error` (or the exception or error value) says why. A call the
   agent turned down, including "too many calls", is `GS_ERR_REFUSED` with the agent's reason.
-- **Compatibility:** `GS_SDK_VERSION` is 2. Later versions only add functions; nothing here changes meaning.
+- **Compatibility:** `GS_SDK_VERSION` is 3. Later versions only add functions; nothing here changes meaning.
 
 ## Building it into a game
 

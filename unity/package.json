@@ -2,10 +2,17 @@
   "name": "com.survivalservers.studio",
   "version": "0.1.0",
   "displayName": "Survival Servers Studio",
-  "description": "A dedicated game server with no SDK: ports and match settings from the environment and the local API, ready, players, stop.",
+  "description": "The calls a dedicated game server makes, with no SDK: ports and match settings from the environment, and the local API (ready, the match, players, stop). A sample game server comes with it.",
   "unity": "2021.3",
   "license": "Apache-2.0",
   "dependencies": {
     "com.unity.nuget.newtonsoft-json": "3.2.1"
-  }
+  },
+  "samples": [
+    {
+      "displayName": "Sample game",
+      "description": "A small UDP game server that makes every call: ready, waits for its match, reports players and stops when the match ends.",
+      "path": "Samples~/SampleGame"
+    }
+  ]
 }

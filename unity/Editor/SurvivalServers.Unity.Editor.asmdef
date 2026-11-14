@@ -1,7 +1,7 @@
 {
-  "name": "GameServerSample.Editor",
-  "rootNamespace": "GameServerSample.Editor",
-  "references": ["GameServerSample.Runtime"],
+  "name": "SurvivalServers.Unity.Editor",
+  "rootNamespace": "SurvivalServers.Unity.Editor",
+  "references": ["SurvivalServers.Unity"],
   "includePlatforms": ["Editor"],
   "excludePlatforms": [],
   "allowUnsafeCode": false,

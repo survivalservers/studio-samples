@@ -105,12 +105,39 @@ func underAgent(t *testing.T, env []string, program ...string) {
 	}
 }
 
+// underAgentBackground runs a sample in its background-helper mode (GS_SAMPLE_BACKGROUND): the library sends
+// health on its own timer and calls the sample back when the match arrives and when the stop notice comes.
+func underAgentBackground(t *testing.T, env []string, program ...string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	args := []string{"dev", "-port", "0", "-warm", "-allocate-after", "300ms", "-env", "MAP=dunes", "-external-id", "m42",
+		"-shutdown-time", "5s", "-stop", "local_api", "-dir", t.TempDir(), "--"}
+	cmd := exec.CommandContext(ctx, devagent, append(args, program...)...)
+	cmd.Env = append(append(os.Environ(), env...), "GS_SAMPLE_BACKGROUND=1")
+	out, err := cmd.CombinedOutput()
+	got := string(out)
+	if err != nil {
+		t.Fatalf("survivalservers dev: %v\n%s", err, got)
+	}
+	for _, want := range []string{"match m42 map=dunes", "players: 1 [p1]", "labels: mode=ffa", `the server asked to stop: "match_over"`,
+		"shutdown reason=self deadline=set", "exited after the stop request with code 0"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("background: missing %q in:\n%s", want, got)
+		}
+	}
+	if n := strings.Count(got, "] health\n"); n < 2 {
+		t.Fatalf("background: %d health calls, want the helper's (2 or more):\n%s", n, got)
+	}
+}
+
 func TestC(t *testing.T) {
 	need(t, "cc")
 	bin := filepath.Join(t.TempDir(), "sample")
 	build(t, ".", "cc", "-std=c99", "-Wall", "-Wextra", "-pedantic", "-Werror", "-D_POSIX_C_SOURCE=200809L", "-Ic/include",
 		"c/sample/sample.c", "c/src/gs_sdk.c", "-lpthread", "-o", bin)
 	underAgent(t, nil, bin)
+	underAgentBackground(t, nil, bin)
 }
 
 func TestCPlusPlus(t *testing.T) {
@@ -119,6 +146,7 @@ func TestCPlusPlus(t *testing.T) {
 	build(t, ".", "cc", "-std=c99", "-Wall", "-Werror", "-D_POSIX_C_SOURCE=200809L", "-Ic/include", "-c", "c/src/gs_sdk.c", "-o", dir+"/gs_sdk.o")
 	build(t, ".", "c++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-Ic/include", "-Icpp", "cpp/sample.cpp", dir+"/gs_sdk.o", "-lpthread", "-o", dir+"/sample")
 	underAgent(t, nil, dir+"/sample")
+	underAgentBackground(t, nil, dir+"/sample")
 }
 
 func TestGo(t *testing.T) {
@@ -126,6 +154,7 @@ func TestGo(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "sample")
 	build(t, ".", "go", "build", "-o", bin, "./go/sample")
 	underAgent(t, nil, bin)
+	underAgentBackground(t, nil, bin)
 }
 
 func TestCSharp(t *testing.T) {
@@ -145,6 +174,7 @@ func TestCSharp(t *testing.T) {
 		t.Fatalf("dotnet build: %v\n%s", err, out)
 	}
 	underAgent(t, []string{"LD_LIBRARY_PATH=" + dir, "DOTNET_CLI_TELEMETRY_OPTOUT=1"}, dir+"/out/Sample")
+	underAgentBackground(t, []string{"LD_LIBRARY_PATH=" + dir, "DOTNET_CLI_TELEMETRY_OPTOUT=1"}, dir+"/out/Sample")
 }
 
 // copyTree copies the files under src to dst, leaving out build output.
@@ -190,6 +220,7 @@ func TestRust(t *testing.T) {
 	build(t, "rust", cargo, "test", "--offline", "--locked", "--quiet", "--target-dir", target)
 	build(t, "rust", cargo, "build", "--offline", "--locked", "--quiet", "--example", "sample", "--target-dir", target)
 	underAgent(t, nil, filepath.Join(target, "debug", "examples", "sample"))
+	underAgentBackground(t, nil, filepath.Join(target, "debug", "examples", "sample"))
 }
 
 // TestWindowsBuilds compiles the library (static and as gs_sdk.dll), the C and C++ samples, the Go layer and (when

@@ -8,7 +8,8 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using GameServerSample.Core;
+using GameServerSample;
+using SurvivalServers.Unity;
 using Newtonsoft.Json;
 using NUnit.Framework;
 

@@ -4,13 +4,13 @@ using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
-namespace GameServerSample.Editor
+namespace SurvivalServers.Unity.Editor
 {
 	/// <summary>
 	/// Dedicated server builds for the platform: a Windows zip uploaded as it is, and a Linux build the Dockerfile
-	/// packs into an image. From the menu (Game Server) or the command line:
-	///   Unity -batchmode -quit -projectPath . -executeMethod GameServerSample.Editor.GameServerBuild.Windows
-	///   Unity -batchmode -quit -projectPath . -executeMethod GameServerSample.Editor.GameServerBuild.Linux
+	/// packs into an image. From the menu (Survival Servers Studio) or the command line:
+	///   Unity -batchmode -quit -projectPath . -executeMethod SurvivalServers.Unity.Editor.GameServerBuild.Windows
+	///   Unity -batchmode -quit -projectPath . -executeMethod SurvivalServers.Unity.Editor.GameServerBuild.Linux
 	/// Needs the Dedicated Server build support module for each platform.
 	/// </summary>
 	public static class GameServerBuild

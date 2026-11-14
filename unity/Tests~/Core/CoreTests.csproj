@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- The sample's plain C# (Runtime/Core) under plain .NET. The Unity layer is checked in ../EngineCompile. -->
+  <!-- The package's plain C# (Runtime/Core) and the sample game's match server under plain .NET. The Unity layer is
+       checked in ../EngineCompile. -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>disable</Nullable>
@@ -11,6 +12,7 @@
 
   <ItemGroup>
     <Compile Include="../../Runtime/Core/*.cs" Link="Core/%(Filename)%(Extension)" />
+    <Compile Include="../../Samples~/SampleGame/MatchServer.cs" Link="SampleGame/%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>

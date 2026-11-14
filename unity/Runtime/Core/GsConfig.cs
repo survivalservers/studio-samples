@@ -1,6 +1,6 @@
 using System;
 
-namespace GameServerSample.Core
+namespace SurvivalServers.Unity
 {
 	/// <summary>What the game server learns from its environment. Missing values fall back to a local run on port 7777.</summary>
 	public sealed class GsConfig

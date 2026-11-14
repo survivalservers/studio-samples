@@ -6,7 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 
-namespace GameServerSample.Core
+namespace SurvivalServers.Unity
 {
 	/// <summary>One HTTP reply from the local API. Status 0 means the call did not complete.</summary>
 	public readonly struct LocalReply
@@ -24,7 +24,7 @@ namespace GameServerSample.Core
 	}
 
 	/// <summary>
-	/// How calls reach the local API. In Unity the sample uses UnityWebRequest; <see cref="HttpClientTransport"/>
+	/// How calls reach the local API. In Unity use UnityWebRequestTransport; <see cref="HttpClientTransport"/>
 	/// works in Unity too and is what the tests use.
 	/// </summary>
 	public interface ILocalTransport

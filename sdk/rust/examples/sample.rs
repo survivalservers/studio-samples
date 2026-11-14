@@ -10,6 +10,9 @@ fn main() {
 
 fn run() -> Result<(), gs_sdk::Error> {
     let gs = gs_sdk::Client::from_env()?;
+    if std::env::var_os("GS_SAMPLE_BACKGROUND").is_some() {
+        return background(std::sync::Arc::new(gs));
+    }
     gs.ready()?;
     let m = gs.wait_allocation(Duration::from_secs(30))?.expect("no match within 30 s");
     println!("match {} map={}", m.external_id, m.env("MAP").unwrap_or("-"));
@@ -27,5 +30,34 @@ fn run() -> Result<(), gs_sdk::Error> {
         Some(sd) => println!("shutdown reason={} deadline={}", sd.reason, if sd.deadline_unix_ms > 0 { "set" } else { "none" }),
         None => println!("shutdown reason=none deadline=none"),
     }
+    Ok(())
+}
+
+// With GS_SAMPLE_BACKGROUND set, the library's background helper sends health and calls the two closures once each.
+fn background(gs: std::sync::Arc<gs_sdk::Client>) -> Result<(), gs_sdk::Error> {
+    use std::sync::mpsc;
+    let (matched, match_seen) = mpsc::channel();
+    let (stopped, stop_seen) = mpsc::channel();
+    let helper = gs.start_background(
+        Duration::from_millis(200),
+        Some(Box::new(move |m: gs_sdk::Allocation| {
+            println!("match {} map={}", m.external_id, m.env("MAP").unwrap_or("-"));
+            let _ = matched.send(());
+        })),
+        Some(Box::new(move |sd: gs_sdk::Shutdown| {
+            let _ = stopped.send(sd);
+        })),
+    )?;
+    gs.ready()?;
+    let _ = match_seen.recv_timeout(Duration::from_secs(30));
+    gs.player_connect("p1")?;
+    gs.set_label("mode", "ffa")?;
+    std::thread::sleep(Duration::from_millis(1500)); // the helper sends health meanwhile
+    gs.stop("match_over")?;
+    match stop_seen.recv_timeout(Duration::from_secs(30)) {
+        Ok(sd) => println!("shutdown reason={} deadline={}", sd.reason, if sd.deadline_unix_ms > 0 { "set" } else { "none" }),
+        Err(_) => println!("shutdown reason=none deadline=none"),
+    }
+    helper.stop();
     Ok(())
 }

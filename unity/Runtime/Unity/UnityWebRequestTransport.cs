@@ -1,10 +1,9 @@
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using GameServerSample.Core;
 using UnityEngine.Networking;
 
-namespace GameServerSample
+namespace SurvivalServers.Unity
 {
 	/// <summary>
 	/// The local API over Unity's own UnityWebRequest: no plugin and no native library, so it keeps working
